@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lantern Desk · Support that fixes itself</title>
+<meta name="description" content="Lantern Desk is a hosted helpdesk. Your website sends us support tickets; AI triage sorts them and safe fixes ship automatically.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/base.css">
+<link rel="stylesheet" href="/css/site.css">
+</head>
+<body>
+<header class="site-head">
+  <div class="wrap">
+    <a class="logo" href="/"><span class="logo-mark" data-icon="lantern"></span>Lantern Desk</a>
+    <nav>
+      <a href="#how" class="hide-sm">How it works</a>
+      <a href="#developers" class="hide-sm">Developers</a>
+      <a class="btn sm" href="/login">Agent sign in</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <div>
+      <span class="eyebrow" data-icon="zap"> Helpdesk with AutoFix built in</span>
+      <h1>Support tickets that <em>fix themselves</em>.</h1>
+      <p class="lead">Your website sends us its bug reports. Our AI reads every ticket, asks the customer when something is unclear,
+        and small, safe fixes ship to your site automatically. Your team sees all of it in one dashboard.</p>
+      <div class="cta">
+        <a class="btn primary lg" href="/request/trick-or-commit">Try the request form</a>
+        <a class="btn lg" href="/login">Open the agent workspace</a>
+      </div>
+    </div>
+    <div class="card mock" aria-hidden="true">
+      <div class="line"><div><b>Typo on the shop banner</b><small>LD-1004 · Trick or Commit · 2m ago</small></div><span class="pill green"><span class="dot"></span>Fix live</span></div>
+      <div class="line"><div><b>Cart badge overlaps the icon on mobile</b><small>LD-1003 · Trick or Commit · 6m ago</small></div><span class="pill purple"><span class="dot"></span>Agent fixing</span></div>
+      <div class="line"><div><b>Coupon field looks broken</b><small>LD-1002 · Trick or Commit · 9m ago</small></div><span class="pill amber"><span class="dot"></span>Needs info</span></div>
+      <div class="line"><div><b>Refunds should go to the original card</b><small>LD-1001 · Trick or Commit · 14m ago</small></div><span class="pill red"><span class="dot"></span>Needs developer</span></div>
+    </div>
+  </div>
+
+  <section class="section" id="how">
+    <div class="wrap">
+      <h2>How a ticket moves</h2>
+      <p>Every ticket is rated by risk before anything changes on your site, and only low-risk fixes run on their own.</p>
+      <div class="flow">
+        <div class="card step"><b>Customer reports</b><span>From your site's "Report a problem" form or our hosted form.</span></div>
+        <div class="card step"><b>Gemma triages</b><span>Rated low, moderate or high risk, with a summary and a plan.</span></div>
+        <div class="card step"><b>Questions if unclear</b><span>Moderate tickets ask the customer for detail, then triage again.</span></div>
+        <div class="card step"><b>Claude fixes</b><span>Low-risk fixes are made, checked, built and pushed.</span></div>
+        <div class="card step"><b>Deployed &amp; solved</b><span>CI deploys with a health check; the customer is told it's live.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <h2>Built for the team answering tickets</h2>
+      <p>A workspace your agents can run the day on.</p>
+      <div class="features">
+        <div class="card feature"><div class="ic" data-icon="inbox"></div><h3>One inbox, every client</h3><p>Saved views for new, waiting, AutoFix and developer tickets, with search, filters and CSV export.</p></div>
+        <div class="card feature"><div class="ic" data-icon="bot"></div><h3>See what the AI decided</h3><p>Risk, reasoning, guardrails, the agent's task, commit and deploy run, right on the ticket.</p></div>
+        <div class="card feature"><div class="ic" data-icon="shield"></div><h3>Humans stay in charge</h3><p>Anything touching payments, logins or data goes to a developer. Override any decision in one click.</p></div>
+        <div class="card feature"><div class="ic" data-icon="chat"></div><h3>Replies and notes</h3><p>Public replies reach the customer's tracking page; internal notes stay with your team.</p></div>
+        <div class="card feature"><div class="ic" data-icon="grid"></div><h3>Live numbers</h3><p>Open load, first-reply and solve times, auto-fix rate and a 14-day trend.</p></div>
+        <div class="card feature"><div class="ic" data-icon="key"></div><h3>Per-client API keys</h3><p>Each website gets its own key, stored only as a hash and rotated in a click.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="developers">
+    <div class="wrap">
+      <h2>Connect your website in one request</h2>
+      <p>Post the report from your backend with your client key. You get back a ticket ID and a tracking link for the customer.</p>
+      <pre class="snippet" style="background:#12141c;color:#e3e6ef;padding:16px;border-radius:12px;overflow-x:auto;font-size:12.5px;line-height:1.6">POST /api/v1/tickets
+X-Api-Key: ld_your_client_key
+
+{ "email": "asha@example.com", "subject": "Pay button does nothing",
+  "description": "Tapping Pay on checkout does nothing on my phone.",
+  "category": "bug", "priority": "high", "pageUrl": "/checkout" }
+
+→ 201 { "id": "LD-1007", "trackingUrl": "https://…/t/LD-1007?token=…" }</pre>
+    </div>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap row"><span>Lantern Desk · a Hackfest 2026 demo helpdesk</span><span class="spacer"></span><a href="/login">Agent sign in</a></div>
+</footer>
+<script src="/js/common.js"></script>
+</body>
+</html>

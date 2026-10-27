@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Your ticket · Lantern Desk</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/base.css">
+<link rel="stylesheet" href="/css/site.css">
+</head>
+<body>
+<header class="site-head"><div class="wrap"><a class="logo" href="/"><span class="logo-mark" data-icon="lantern"></span>Lantern Desk</a>
+  <nav><span class="muted" id="company-top"></span></nav></div></header>
+<main class="narrow" id="root"><div class="loading" style="display:grid;place-items:center;padding:60px"><div class="spinner"></div></div></main>
+<script src="/js/common.js"></script>
+<script>
+(() => {
+  const { api, esc, when, ago, icon, initials, CUSTOMER_STAGE } = LD;
+  const id = decodeURIComponent(location.pathname.split('/')[2] || '');
+  const params = new URLSearchParams(location.search);
+  const token = params.get('token') || '';
+  const isNew = params.get('new') === '1';
+  const root = document.getElementById('root');
+  const STEPS = ['received', 'in_review', 'fixing', 'resolved'];
+  const STEP_LABEL = ['Received', 'In review', 'Being fixed', 'Resolved'];
+  let drafted = '';
+
+  async function load(first) {
+    let t;
+    try { t = await api(`/portal/tickets/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`); } catch (e) {
+      if (first) root.innerHTML = `<div class="alert error">${esc(e.message)}</div>`;
+      return;
+    }
+    const box = document.getElementById('reply');
+    if (box) drafted = box.value;
+    document.title = `${t.id} · ${t.company}`;
+    document.getElementById('company-top').textContent = `Support for ${t.company}`;
+    const stepIdx = t.stage === 'waiting_on_you' ? 1 : STEPS.indexOf(t.stage);
+    const msg = (m) => {
+      const av = m.kind === 'autofix' ? `<span class="avatar autofix">${icon('bot')}</span>` : `<span class="avatar ${m.kind}">${esc(initials(m.author))}</span>`;
+      const who = m.kind === 'customer' ? 'You' : m.kind === 'autofix' ? `${esc(t.company)} support (automated)` : `${esc(m.author)} · ${esc(t.company)} support`;
+      return `<div class="msg">${av}<div class="bubble ${m.kind === 'autofix' ? 'autofix' : ''}"><header><b>${who}</b><span class="faint">${esc(when(m.createdAt))}</span></header><div class="body">${esc(m.body)}</div></div></div>`;
+    };
+    root.innerHTML = `
+      ${isNew && first ? `<div class="alert ok" style="margin-bottom:16px">Thanks, your ticket is in. Bookmark this page to follow it; it's your private link.</div>` : ''}
+      <div class="faint mono">${esc(t.id)}</div>
+      <h1 class="page-title" style="margin-top:4px">${esc(t.subject)}</h1>
+      <div class="row" style="margin-top:8px;flex-wrap:wrap">
+        <span class="pill ${t.stage === 'resolved' ? 'green' : t.stage === 'waiting_on_you' ? 'amber' : t.stage === 'fixing' ? 'purple' : 'blue'}"><span class="dot"></span>${esc(CUSTOMER_STAGE[t.stage] || t.stage)}</span>
+        <span class="faint" style="font-size:12.5px">Opened ${esc(when(t.createdAt))} · updated ${ago(t.updatedAt)}</span>
+      </div>
+      <div class="track">${STEPS.map((_, i) => `<div class="${i <= stepIdx ? 'on' : ''}"></div>`).join('')}</div>
+      <div class="track-labels">${STEP_LABEL.map((l, i) => `<span class="${i === stepIdx ? 'on' : ''}">${l}</span>`).join('')}</div>
+      ${t.stage === 'waiting_on_you' ? `<div class="alert" style="background:var(--amber-soft);color:var(--amber);margin-top:16px">We need a bit more detail from you. Please reply below.</div>` : ''}
+      <section class="card" style="padding:16px 18px;margin:20px 0 16px">
+        <div class="row" style="align-items:flex-start"><span class="avatar customer">${esc(initials(t.requester.name || t.requester.email))}</span>
+          <div style="min-width:0;flex:1"><b>You</b> <span class="faint" style="font-size:12px">reported</span>
+          <div style="white-space:pre-wrap;margin-top:6px">${esc(t.description)}</div>
+          ${t.attachments.length ? `<div class="shots">${t.attachments.map((a) => {
+            const u = `/api/portal/tickets/${encodeURIComponent(t.id)}/attachments/${a.id}?token=${encodeURIComponent(token)}`;
+            return `<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="${esc(a.filename)}"></a>`; }).join('')}</div>` : ''}
+          </div></div>
+      </section>
+      <div class="thread">${t.messages.map(msg).join('') || '<p class="faint">No replies yet. We will post updates here.</p>'}</div>
+      ${t.status === 'closed' ? '<p class="faint" style="margin-top:20px">This ticket is closed.</p>' : `
+      <section class="card" style="padding:14px;margin-top:20px">
+        <label class="field">Add a reply<textarea id="reply" rows="4" maxlength="5000" placeholder="${t.stage === 'resolved' ? 'Still not right? Tell us and we will reopen it.' : 'Add more detail or answer our questions.'}"></textarea></label>
+        <div class="row" style="margin-top:10px"><span class="spacer"></span><button class="btn primary" id="send">Send reply</button></div>
+      </section>`}`;
+    const reply = document.getElementById('reply');
+    if (reply) {
+      reply.value = drafted;
+      document.getElementById('send').onclick = async () => {
+        const body = reply.value.trim();
+        if (body.length < 2) { reply.focus(); return; }
+        try {
+          await api(`/portal/tickets/${encodeURIComponent(id)}/replies`, { method: 'POST', body: { token, body } });
+          drafted = '';
+          reply.value = '';
+          LD.toast('Reply sent');
+          load(false);
+        } catch (e) { LD.toast(e.message, 'error'); }
+      };
+    }
+  }
+  if (isNew) history.replaceState(null, '', location.pathname + `?token=${encodeURIComponent(token)}`);
+  load(true);
+  setInterval(() => { if (document.activeElement?.id !== 'reply') load(false); }, 15000);
+})();
+</script>
+</body>
+</html>

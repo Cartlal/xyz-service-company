@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Lantern Desk</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/base.css">
+<link rel="stylesheet" href="/css/site.css">
+</head>
+<body>
+<form class="card auth form" id="form" novalidate>
+  <a class="logo" href="/"><span class="logo-mark" data-icon="lantern"></span>Lantern Desk</a>
+  <div><h1>Sign in to your workspace</h1><p class="muted" style="margin-top:4px">For support agents.</p></div>
+  <div class="alert error" id="err" hidden></div>
+  <label class="field">Email<input class="input" id="email" type="email" autocomplete="username" required></label>
+  <label class="field">Password<input class="input" id="password" type="password" autocomplete="current-password" required></label>
+  <button class="btn primary lg" id="go" type="submit">Sign in</button>
+</form>
+<script src="/js/common.js"></script>
+<script>
+  (async () => {
+    const next = new URLSearchParams(location.search).get('next');
+    const target = next && next.startsWith('/app') ? next : '/app';
+    try { await LD.api('/auth/me'); location.replace(target); return; } catch { /* not signed in */ }
+    document.getElementById('email').focus();
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = document.getElementById('err');
+      const btn = document.getElementById('go');
+      btn.disabled = true;
+      err.hidden = true;
+      try {
+        await LD.api('/auth/login', { method: 'POST', body: { email: document.getElementById('email').value, password: document.getElementById('password').value } });
+        location.replace(target);
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.hidden = false;
+        btn.disabled = false;
+      }
+    });
+  })();
+</script>
+</body>
+</html>

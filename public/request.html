@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Report a problem · Lantern Desk</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/base.css">
+<link rel="stylesheet" href="/css/site.css">
+</head>
+<body>
+<header class="site-head"><div class="wrap"><a class="logo" href="/"><span class="logo-mark" data-icon="lantern"></span>Lantern Desk</a>
+  <nav><span class="muted" id="company-top"></span></nav></div></header>
+<main class="narrow">
+  <h1 class="page-title" id="heading">Report a problem</h1>
+  <p class="muted" style="margin:6px 0 20px" id="intro">Tell us what went wrong. You'll get a link to follow your ticket.</p>
+  <div class="alert error" id="err" hidden style="margin-bottom:14px"></div>
+  <form class="card form-card form" id="form" novalidate>
+    <div class="two">
+      <label class="field">Your name<input class="input" name="name" autocomplete="name" maxlength="100"></label>
+      <label class="field">Email<input class="input" name="email" type="email" autocomplete="email" required maxlength="200"></label>
+    </div>
+    <label class="field">Subject<input class="input" name="subject" required minlength="5" maxlength="200" placeholder="e.g. Pay button does nothing on my phone"></label>
+    <div class="two">
+      <label class="field">Type of problem<select name="category" id="category"></select></label>
+      <label class="field">How bad is it?<select name="priority" id="priority">
+        <option value="low">Low: minor or cosmetic</option><option value="normal" selected>Normal: annoying</option>
+        <option value="high">High: can't finish something</option><option value="urgent">Urgent: site is broken</option></select></label>
+    </div>
+    <label class="field">What happened?<textarea name="description" required minlength="10" maxlength="5000" rows="5" placeholder="Describe the problem in your own words."></textarea></label>
+    <label class="field">Page it happened on <span class="hint">optional, paste the link</span><input class="input" name="pageUrl" maxlength="500" placeholder="https://…"></label>
+    <label class="field">Steps to reproduce <span class="hint">optional</span><textarea name="steps" rows="3" maxlength="2000" placeholder="1. Open … 2. Click … 3. …"></textarea></label>
+    <div class="two">
+      <label class="field">What you expected <span class="hint">optional</span><input class="input" name="expected" maxlength="1000"></label>
+      <label class="field">What happened instead <span class="hint">optional</span><input class="input" name="actual" maxlength="1000"></label>
+    </div>
+    <div class="field" style="font-weight:600;font-size:13px">Screenshots <span class="hint" style="font-weight:400">up to 3 images, 3 MB each</span>
+      <label class="drop" id="drop">Drop images here or <u>choose files</u><input type="file" id="files" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden></label>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+    <div class="hp" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
+    <div class="row"><span class="faint" style="font-size:12px">We use your email only to update you about this ticket.</span><span class="spacer"></span>
+      <button class="btn primary lg" id="submit" type="submit">Submit ticket</button></div>
+  </form>
+</main>
+<script src="/js/common.js"></script>
+<script>
+(async () => {
+  const { api, esc, cap, icon } = LD;
+  const slug = location.pathname.split('/')[2];
+  const form = document.getElementById('form');
+  const err = document.getElementById('err');
+  let info;
+  try { info = await api(`/forms/${encodeURIComponent(slug)}`); } catch (e) {
+    form.hidden = true; err.textContent = e.message; err.hidden = false; return;
+  }
+  document.title = `Report a problem · ${info.name}`;
+  document.getElementById('heading').textContent = `Report a problem with ${info.name}`;
+  document.getElementById('company-top').textContent = `Support for ${info.name}`;
+  document.getElementById('category').innerHTML = info.categories.map((c) => `<option value="${c}">${esc(cap(c))}</option>`).join('');
+  const params = new URLSearchParams(location.search);
+  if (params.get('page')) form.pageUrl.value = params.get('page');
+
+  const files = [];
+  const thumbs = document.getElementById('thumbs');
+  function drawThumbs() {
+    thumbs.innerHTML = files.map((f, i) => `<figure><img src="${f.url}" alt="${esc(f.filename)}"><button type="button" data-i="${i}" aria-label="Remove ${esc(f.filename)}">${icon('x')}</button></figure>`).join('');
+    thumbs.querySelectorAll('button').forEach((b) => { b.onclick = () => { files.splice(Number(b.dataset.i), 1); drawThumbs(); }; });
+  }
+  function addFiles(list) {
+    for (const f of list) {
+      if (files.length >= 3) { LD.toast('At most 3 screenshots', 'error'); break; }
+      if (!/^image\/(png|jpeg|gif|webp)$/.test(f.type)) { LD.toast(`${f.name} is not an image`, 'error'); continue; }
+      if (f.size > 3 * 1024 * 1024) { LD.toast(`${f.name} is over 3 MB`, 'error'); continue; }
+      const reader = new FileReader();
+      reader.onload = () => { files.push({ filename: f.name, data: reader.result, url: reader.result }); drawThumbs(); };
+      reader.readAsDataURL(f);
+    }
+  }
+  const drop = document.getElementById('drop');
+  document.getElementById('files').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer.files); });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.hidden = true;
+    if (!form.checkValidity()) { form.reportValidity(); return; }
+    const body = Object.fromEntries(new FormData(form).entries());
+    delete body.files;
+    body.attachments = files.map(({ filename, data }) => ({ filename, data }));
+    const btn = document.getElementById('submit');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      const r = await api(`/forms/${encodeURIComponent(slug)}/tickets`, { method: 'POST', body });
+      location.href = r.trackingUrl + '&new=1';
+    } catch (ex) {
+      err.textContent = ex.message; err.hidden = false; window.scrollTo(0, 0);
+      btn.disabled = false; btn.textContent = 'Submit ticket';
+    }
+  });
+})();
+</script>
+</body>
+</html>
