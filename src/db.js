@@ -197,7 +197,7 @@ async function addMessage(ticketId, kind, author, body, createdAt = now()) {
 
 const TICKET_COLUMNS = new Set([
   'status', 'priority', 'category', 'assignee_id', 'autofix_id', 'autofix_stage', 'autofix_json',
-  'autofix_synced_at', 'first_reply_at', 'solved_at', 'updated_at'
+  'autofix_synced_at', 'first_reply_at', 'solved_at', 'updated_at', 'retriage_requested'
 ]);
 
 async function updateTicket(id, fields) {

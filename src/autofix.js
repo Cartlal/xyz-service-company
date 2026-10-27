@@ -128,7 +128,12 @@ async function onStage(row, stage, info) {
 async function sync(ticketId) {
   const row = await db.ticketRow(ticketId);
   if (!row || !enabled()) return;
-  if (!row.autofix_id) return forward(row.id); // never sent, or AutoFix was down
+  if (!row.autofix_id) return forward(row.id); // never sent (e.g. raised on the store), or AutoFix was down
+  // The customer answered AutoFix's questions on a client site that writes to our database.
+  if (row.retriage_requested) {
+    await db.updateTicket(row.id, { retriage_requested: false });
+    return retriage(row.id);
+  }
   let t;
   try {
     t = await call('GET', `/api/tickets/${encodeURIComponent(row.autofix_id)}`);

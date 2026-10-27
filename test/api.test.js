@@ -236,3 +236,33 @@ test('hosted form, stats, CSV and clients', async () => {
   assert.equal((await call('GET', `/api/v1/tickets/${ticket.id}`, null, { 'X-Api-Key': rotated.body.apiKey })).status, 404);
   assert.equal((await call('GET', `/api/v1/tickets/${ticket.id}`, null, KEY)).status, 200);
 });
+
+test('picks up tickets the store writes straight into the database, and re-triages on its flag', async () => {
+  const client = await db.clientBySlug('trick-or-commit');
+  const ts = db.now();
+  // The shape trick-or-commit/backend/src/routes/tickets.js inserts.
+  await db.col('tickets').insertOne({
+    _id: 'LD-9001', n: 8001, client_id: client.id, channel: 'store', access_token: 'tok', requester_name: 'Asha',
+    requester_email: 'asha@example.com', subject: 'Typo on the hoodie page', description: 'It says Hoddie.',
+    category: 'typo', priority: 'normal', status: 'new', page_url: '/shop/hoodie', steps: null, expected: null,
+    actual: null, environment: null, external_ref: null, assignee_id: null, autofix_id: null, autofix_stage: null,
+    autofix_json: null, autofix_synced_at: null, created_at: ts, updated_at: ts, first_reply_at: null, solved_at: null,
+    store_user_id: null, severity: null, resolution: null
+  });
+  const sentBefore = fake.n;
+  await autofix.syncAll();
+  const row = await db.ticketRow('LD-9001');
+  assert.equal(row.autofix_id, `VP-${sentBefore + 1}`);
+  assert.equal(fake.tickets.get(row.autofix_id).body.external_id, 'LD-9001');
+
+  // The store sets retriage_requested when the reporter answers AutoFix's questions there.
+  fake.tickets.get(row.autofix_id).status = 'NEEDS_INFO';
+  await autofix.syncAll();
+  await db.addMessage('LD-9001', 'customer', 'Asha', 'On the product page, top heading.');
+  await db.col('tickets').updateOne({ _id: 'LD-9001' }, { $set: { retriage_requested: true } });
+  await autofix.syncAll();
+  const after = await db.ticketRow('LD-9001');
+  assert.equal(after.retriage_requested, false);
+  assert.equal(after.autofix_id, `VP-${sentBefore + 2}`);
+  assert.match(fake.tickets.get(after.autofix_id).body.description, /top heading/);
+});

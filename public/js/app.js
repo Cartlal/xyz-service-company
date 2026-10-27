@@ -331,7 +331,7 @@
 
   function paintDetail(t) {
     $('#d-subject').textContent = t.subject;
-    $('#d-sub').innerHTML = `<span class="tid">${esc(t.id)}</span> · ${esc(t.client?.name || '')} · via ${t.channel === 'web' ? 'request form' : 'API'} · opened ${esc(when(t.createdAt))}`;
+    $('#d-sub').innerHTML = `<span class="tid">${esc(t.id)}</span> · ${esc(t.client?.name || '')} · via ${({ web: 'request form', store: 'store report form' })[t.channel] || 'API'} · opened ${esc(when(t.createdAt))}`;
     $('#d-pills').innerHTML = pill(STATUS, t.status) + pill(PRIORITY, t.priority, { dot: false }) + (t.autofix.stage ? pill(STAGE, t.autofix.stage) : '');
 
     const rows = [['Page', t.pageUrl], ['Steps', t.steps], ['Expected', t.expected], ['Actual', t.actual], ['Environment', t.environment], ['Client ref', t.externalRef]]
