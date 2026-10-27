@@ -48,10 +48,12 @@ const publicAgent = (a) => ({ id: a.id, name: a.name, email: a.email, role: a.ro
 
 function requireAgent(req, res, next) {
   const session = readSession(cookies(req)[COOKIE]);
-  const agent = session && db.get().prepare('SELECT * FROM agents WHERE id = ?').get(session.sub);
-  if (!agent) return next(new HttpError(401, 'Please sign in.'));
-  req.agent = publicAgent(agent);
-  next();
+  if (!session) return next(new HttpError(401, 'Please sign in.'));
+  db.agentById(session.sub).then((agent) => {
+    if (!agent) return next(new HttpError(401, 'Please sign in.'));
+    req.agent = publicAgent(agent);
+    next();
+  }, next);
 }
 
 function requireAdmin(req, res, next) {
@@ -64,10 +66,11 @@ function requireAdmin(req, res, next) {
 
 // Client websites authenticate with `X-Api-Key: ld_...`.
 function requireClient(req, res, next) {
-  const client = db.clientByKey(req.get('X-Api-Key'));
-  if (!client) return next(new HttpError(401, 'Bad or missing X-Api-Key header.'));
-  req.client = client;
-  next();
+  db.clientByKey(req.get('X-Api-Key')).then((client) => {
+    if (!client) return next(new HttpError(401, 'Bad or missing X-Api-Key header.'));
+    req.client = client;
+    next();
+  }, next);
 }
 
 function secretMatches(given, expected) {

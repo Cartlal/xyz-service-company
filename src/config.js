@@ -7,7 +7,9 @@ const env = (name, fallback = '') => (process.env[name] ?? fallback).trim();
 
 module.exports = {
   PORT: Number(env('PORT', '5050')),
-  DB_FILE: env('DB_FILE') || path.join(__dirname, '..', 'data', 'helpdesk.db'),
+  // MongoDB Atlas. The cluster can be shared with other apps; the helpdesk keeps to MONGODB_DB.
+  MONGODB_URI: env('MONGODB_URI'),
+  MONGODB_DB: env('MONGODB_DB', 'lantern_desk'),
   // Public address of this helpdesk; used in the tracking links sent back to client sites.
   PUBLIC_URL: env('PUBLIC_URL', 'http://localhost:5050').replace(/\/$/, ''),
   SESSION_SECRET: env('SESSION_SECRET') || 'dev-only-session-secret-change-me',

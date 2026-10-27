@@ -42,14 +42,20 @@ before(async () => {
   await new Promise((r) => fakeServer.listen(0, r));
   process.env.AUTOFIX_URL = `http://127.0.0.1:${fakeServer.address().port}`;
   db = require('../src/db');
-  db.open(':memory:');
+  // A throwaway database on the same Atlas cluster, deleted after the run.
+  await db.open({ dbName: `lantern_desk_test_${process.pid}` });
   autofix = require('../src/autofix');
   const app = require('../src/app');
   server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
-after(() => { server.close(); fakeServer.close(); });
+after(async () => {
+  server.close();
+  fakeServer.close();
+  await db.col('tickets').db.dropDatabase();
+  await db.close();
+});
 
 async function call(method, path, body, headers = {}) {
   const res = await fetch(base + path, {
@@ -71,7 +77,7 @@ const report = {
   steps: '1. Open the shop', expected: 'Hacktoberfest', actual: 'Hactoberfest'
 };
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-const settle = () => new Promise((r) => setTimeout(r, 50));
+const settle = () => new Promise((r) => setTimeout(r, 1500)); // AutoFix forward runs after the response
 
 let ticket;
 
@@ -91,7 +97,7 @@ test('client creates a ticket; it is forwarded to AutoFix', async () => {
   assert.match(r.body.trackingUrl, /\/t\/LD-\d+\?token=/);
   ticket = r.body;
   await settle();
-  const row = db.ticketRow(ticket.id);
+  const row = (await db.ticketRow(ticket.id));
   assert.equal(row.autofix_id, 'VP-1');
   assert.equal(row.requester_email, 'asha@example.com');
   const sent = fake.tickets.get('VP-1').body;
@@ -133,7 +139,7 @@ test('AutoFix stages drive the ticket: needs info, customer reply, fix, live', a
   const reply = await call('POST', `/api/portal/tickets/${ticket.id}/replies`, { token: ticket.accessToken, body: 'The orange one at the top of /shop.' });
   assert.equal(reply.status, 201);
   await settle();
-  assert.equal(db.ticketRow(ticket.id).autofix_id, 'VP-2');
+  assert.equal((await db.ticketRow(ticket.id)).autofix_id, 'VP-2');
   assert.match(fake.tickets.get('VP-2').body.description, /orange one at the top/);
 
   const af2 = fake.tickets.get('VP-2');
@@ -160,7 +166,7 @@ test('AutoFix stages drive the ticket: needs info, customer reply, fix, live', a
 test('high-risk ticket goes to a developer; agent can approve it anyway', async () => {
   const r = await call('POST', '/api/v1/tickets', { ...report, subject: 'Refunds go to the wrong card', category: 'payment', priority: 'urgent' }, KEY);
   await settle();
-  const row = db.ticketRow(r.body.id);
+  const row = (await db.ticketRow(r.body.id));
   const af = fake.tickets.get(row.autofix_id);
   Object.assign(af, { status: 'HUMAN', risk: 'HIGH', task_spec: 'Change refund target', triage: { summary: 'Refund routing', guardrail: 'forced HIGH: payment' } });
   await autofix.sync(r.body.id);

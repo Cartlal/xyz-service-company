@@ -48,11 +48,11 @@ Lantern Desk polls AutoFix every `AUTOFIX_SYNC_SECONDS` and also syncs immediate
 `/api/autofix/bugs/<id>/update`.
 
 ## Run it
-Needs Node 22.13+ (uses the built-in `node:sqlite`).
+Needs Node 20+ and a MongoDB database (MongoDB Atlas works; the cluster can be shared with other apps,
+the helpdesk keeps to its own `MONGODB_DB` database). In Atlas, allow your IP under Network Access.
 ```bash
 npm install
-cp .env.example .env      # set SESSION_SECRET; set AUTOFIX_URL + AUTOFIX_SECRET to connect AutoFix
-npm run seed:demo         # optional: 19 realistic demo tickets
+cp .env.example .env      # set MONGODB_URI, SESSION_SECRET; AUTOFIX_URL + AUTOFIX_SECRET to connect AutoFix
 npm start                 # http://localhost:5050
 ```
 Sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env`. If `DEFAULT_CLIENT_KEY` is empty, the first start
@@ -95,6 +95,7 @@ Fields: `email`, `subject` (5–200), `description` (10–5000) required; `name`
 ```bash
 npm test
 ```
+Uses a throwaway database `lantern_desk_test_<pid>` on the same `MONGODB_URI`, dropped afterwards.
 Runs the API against a fake AutoFix: intake and validation, sign-in, the full NEEDS_INFO → customer reply →
 re-triage → QUEUED → PUSHED → LIVE path, developer hand-off and "fix it anyway", replies vs internal notes,
 portal tokens, hosted form, stats, CSV, and per-client keys.
@@ -103,10 +104,9 @@ portal tokens, hosted form, stats, CSV, and per-client keys.
 | Path | What |
 |---|---|
 | `src/app.js` | Express app: auth, AutoFix callback, routes, pages |
-| `src/db.js` | SQLite schema (agents, clients, tickets, messages, attachments) and helpers |
+| `src/db.js` | MongoDB collections (agents, clients, tickets, messages, attachments, counters) and helpers |
 | `src/autofix.js` | AutoFix bridge: forward, sync loop, stage → ticket rules, approve, re-triage |
 | `src/routes/intake.js` | Client API and hosted form |
 | `src/routes/portal.js` | Customer tracking page API |
 | `src/routes/agent.js` | Workspace API: views, ticket actions, stats, CSV, clients |
 | `public/` | Pages (plain HTML/CSS/JS, no build step) |
-| `scripts/seed-demo.js` | Demo tickets |

@@ -3,7 +3,7 @@ const express = require('express');
 const config = require('./config');
 const db = require('./db');
 const autofix = require('./autofix');
-const { HttpError } = require('./errors');
+const { HttpError, asyncRoute } = require('./errors');
 const { setSession, clearSession, publicAgent, requireAgent, secretMatches } = require('./auth');
 const { rateLimit } = require('./validate');
 
@@ -20,15 +20,14 @@ app.use(express.json({ limit: '14mb' }));
 app.get('/api/health', (req, res) => res.json({ ok: true, autofix: autofix.enabled() }));
 
 // --- Agent sign-in ---
-app.post('/api/auth/login', rateLimit({ windowMs: 60_000, max: 10 }), (req, res) => {
-  const email = String(req.body?.email || '').trim().toLowerCase();
-  const agent = db.get().prepare('SELECT * FROM agents WHERE email = ?').get(email);
+app.post('/api/auth/login', rateLimit({ windowMs: 60_000, max: 10 }), asyncRoute(async (req, res) => {
+  const agent = await db.agentByEmail(String(req.body?.email || '').trim());
   if (!agent || !db.checkPassword(String(req.body?.password || ''), agent.password_hash)) {
     throw new HttpError(401, 'Wrong email or password.');
   }
   setSession(req, res, agent.id);
   res.json(publicAgent(agent));
-});
+}));
 app.post('/api/auth/logout', (req, res) => {
   clearSession(res);
   res.json({ ok: true });
@@ -36,15 +35,16 @@ app.post('/api/auth/logout', (req, res) => {
 app.get('/api/auth/me', requireAgent, (req, res) => res.json(req.agent));
 
 // --- AutoFix progress callback (same path AutoFix already posts to) ---
-app.post('/api/autofix/bugs/:id/update', (req, res, next) => {
+app.post('/api/autofix/bugs/:id/update', asyncRoute(async (req, res) => {
   if (!secretMatches(req.get('X-AutoFix-Secret'), config.AUTOFIX_SECRET)) {
-    return next(new HttpError(401, 'bad or missing X-AutoFix-Secret header'));
+    throw new HttpError(401, 'bad or missing X-AutoFix-Secret header');
   }
-  if (!db.ticketRow(req.params.id)) return next(new HttpError(404, 'ticket not found'));
+  if (!(await db.ticketRow(req.params.id))) throw new HttpError(404, 'ticket not found');
   // Pull the full AutoFix ticket and apply its stage; the posted message is AutoFix's
   // summary of the same change, so it is not stored twice.
-  autofix.sync(req.params.id).then(() => res.json({ ok: true }), next);
-});
+  await autofix.sync(req.params.id);
+  res.json({ ok: true });
+}));
 
 app.use('/api', require('./routes/intake').router);
 app.use('/api/portal', require('./routes/portal'));

@@ -1,8 +1,8 @@
-// SQLite storage (node:sqlite). One connection; Node runs handlers one at a time.
-const fs = require('node:fs');
-const path = require('node:path');
+// MongoDB storage (Atlas). The helpdesk uses its own database on the shared cluster.
+// Documents keep the same snake_case fields the SQLite version had, and every row
+// handed to the routes carries `id` (the document _id).
 const crypto = require('node:crypto');
-const { DatabaseSync } = require('node:sqlite');
+const { MongoClient, Binary } = require('mongodb');
 const config = require('./config');
 
 const STATUSES = ['new', 'open', 'pending', 'on_hold', 'solved', 'closed'];
@@ -12,85 +12,16 @@ const CATEGORIES = ['bug', 'typo', 'design', 'feature', 'payment', 'account', 'o
 // are visible to agents. AutoFix lines are written for the customer, so they are public too.
 const PUBLIC_KINDS = ['customer', 'agent', 'autofix'];
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS agents (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  name          TEXT NOT NULL,
-  email         TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  role          TEXT NOT NULL DEFAULT 'agent' CHECK (role IN ('admin', 'agent')),
-  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Companies whose websites send tickets here. Only a hash of the API key is kept.
-CREATE TABLE IF NOT EXISTS clients (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  name         TEXT NOT NULL,
-  slug         TEXT NOT NULL UNIQUE,
-  site_url     TEXT,
-  key_hash     TEXT NOT NULL,
-  key_hint     TEXT NOT NULL,
-  autofix      INTEGER NOT NULL DEFAULT 1,
-  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS tickets (
-  n                 INTEGER PRIMARY KEY AUTOINCREMENT,
-  id                TEXT UNIQUE,
-  client_id         INTEGER NOT NULL REFERENCES clients(id),
-  channel           TEXT NOT NULL DEFAULT 'api',
-  access_token      TEXT NOT NULL,
-  requester_name    TEXT,
-  requester_email   TEXT NOT NULL,
-  subject           TEXT NOT NULL,
-  description       TEXT NOT NULL,
-  category          TEXT NOT NULL,
-  priority          TEXT NOT NULL DEFAULT 'normal',
-  status            TEXT NOT NULL DEFAULT 'new',
-  page_url          TEXT,
-  steps             TEXT,
-  expected          TEXT,
-  actual            TEXT,
-  environment       TEXT,
-  external_ref      TEXT,
-  assignee_id       INTEGER REFERENCES agents(id) ON DELETE SET NULL,
-  autofix_id        TEXT,
-  autofix_stage     TEXT,
-  autofix_json      TEXT,
-  autofix_synced_at TEXT,
-  created_at        TEXT NOT NULL,
-  updated_at        TEXT NOT NULL,
-  first_reply_at    TEXT,
-  solved_at         TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets (status, n);
-CREATE INDEX IF NOT EXISTS idx_tickets_stage ON tickets (autofix_stage);
-
-CREATE TABLE IF NOT EXISTS messages (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  ticket_id  TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-  kind       TEXT NOT NULL CHECK (kind IN ('customer', 'agent', 'note', 'autofix', 'system')),
-  author     TEXT NOT NULL,
-  body       TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_messages_ticket ON messages (ticket_id, id);
-
-CREATE TABLE IF NOT EXISTS attachments (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  ticket_id  TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-  filename   TEXT NOT NULL,
-  mime       TEXT NOT NULL,
-  size       INTEGER NOT NULL,
-  data       BLOB NOT NULL,
-  created_at TEXT NOT NULL
-);
-`;
-
+let client = null;
 let db = null;
 
 const now = () => new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+const col = (name) => {
+  if (!db) throw new Error('database not open');
+  return db.collection(name);
+};
+const row = (doc) => (doc ? { ...doc, id: doc._id } : null);
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -108,47 +39,59 @@ function newApiKey() {
   return `ld_${crypto.randomBytes(24).toString('base64url')}`;
 }
 
-function open(file = config.DB_FILE) {
-  if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-  db.exec(SCHEMA);
-  seedDefaults();
+// Auto-increment ids, so URLs and ticket numbers stay short (LD-1001, attachment 7).
+async function nextId(name) {
+  const r = await col('counters').findOneAndUpdate(
+    { _id: name }, { $inc: { seq: 1 } }, { upsert: true, returnDocument: 'after' }
+  );
+  return r.seq;
+}
+
+async function open({ uri = config.MONGODB_URI, dbName = config.MONGODB_DB } = {}) {
+  if (!uri) throw new Error('MONGODB_URI is not set (see .env.example).');
+  client = new MongoClient(uri, { serverSelectionTimeoutMS: 20000 });
+  await client.connect();
+  db = client.db(dbName);
+  await Promise.all([
+    col('agents').createIndex({ email: 1 }, { unique: true }),
+    col('clients').createIndex({ slug: 1 }, { unique: true }),
+    col('clients').createIndex({ key_hash: 1 }),
+    col('tickets').createIndex({ n: 1 }),
+    col('tickets').createIndex({ status: 1, updated_at: -1 }),
+    col('tickets').createIndex({ autofix_stage: 1 }),
+    col('messages').createIndex({ ticket_id: 1, _id: 1 }),
+    col('messages').createIndex({ created_at: -1 }),
+    col('attachments').createIndex({ ticket_id: 1 })
+  ]);
+  await seedDefaults();
   return db;
 }
 
-function get() {
-  if (!db) throw new Error('database not open');
-  return db;
+async function close() {
+  if (client) await client.close();
+  client = null;
+  db = null;
 }
 
-function tx(fn) {
-  db.exec('BEGIN');
-  try {
-    const out = fn();
-    db.exec('COMMIT');
-    return out;
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-}
-
-function createClient({ name, slug, siteUrl, apiKey, autofix = true }) {
+async function createClient({ name, slug, siteUrl, apiKey, autofix = true }) {
   const key = apiKey || newApiKey();
-  const { lastInsertRowid } = db.prepare(
-    'INSERT INTO clients (name, slug, site_url, key_hash, key_hint, autofix) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(name, slug, siteUrl || null, sha256(key), key.slice(-4), autofix ? 1 : 0);
-  return { client: clientById(Number(lastInsertRowid)), apiKey: key };
+  const id = await nextId('clients');
+  await col('clients').insertOne({
+    _id: id, name, slug, site_url: siteUrl || null, key_hash: sha256(key), key_hint: key.slice(-4),
+    autofix: Boolean(autofix), created_at: now()
+  });
+  return { client: await clientById(id), apiKey: key };
 }
 
-function seedDefaults() {
-  if (db.prepare('SELECT COUNT(*) AS n FROM agents').get().n === 0) {
-    db.prepare('INSERT INTO agents (name, email, password_hash, role) VALUES (?, ?, ?, ?)')
-      .run(config.ADMIN_NAME, config.ADMIN_EMAIL.toLowerCase(), hashPassword(config.ADMIN_PASSWORD), 'admin');
+async function seedDefaults() {
+  if ((await col('agents').countDocuments()) === 0) {
+    await col('agents').insertOne({
+      _id: await nextId('agents'), name: config.ADMIN_NAME, email: config.ADMIN_EMAIL.toLowerCase(),
+      password_hash: hashPassword(config.ADMIN_PASSWORD), role: 'admin', created_at: now()
+    });
   }
-  if (db.prepare('SELECT COUNT(*) AS n FROM clients').get().n === 0) {
-    const { apiKey } = createClient({
+  if ((await col('clients').countDocuments()) === 0) {
+    const { apiKey } = await createClient({
       name: config.DEFAULT_CLIENT_NAME,
       slug: config.DEFAULT_CLIENT_SLUG,
       siteUrl: config.DEFAULT_CLIENT_URL,
@@ -160,13 +103,30 @@ function seedDefaults() {
   }
 }
 
-function clientById(id) {
-  return db.prepare('SELECT * FROM clients WHERE id = ?').get(id) || null;
-}
+// --- agents ---
+const agentById = async (id) => row(await col('agents').findOne({ _id: Number(id) }));
+const agentByEmail = async (email) => row(await col('agents').findOne({ email: String(email).toLowerCase() }));
+const listAgents = async () => (await col('agents').find({}, { projection: { name: 1 } }).sort({ name: 1 }).toArray())
+  .map((a) => ({ id: a._id, name: a.name }));
 
-function clientByKey(key) {
+// --- clients ---
+const clientById = async (id) => row(await col('clients').findOne({ _id: Number(id) }));
+const clientBySlug = async (slug) => row(await col('clients').findOne({ slug: String(slug) }));
+async function clientByKey(key) {
   if (!key) return null;
-  return db.prepare('SELECT * FROM clients WHERE key_hash = ?').get(sha256(String(key))) || null;
+  return row(await col('clients').findOne({ key_hash: sha256(String(key)) }));
+}
+async function updateClient(id, fields) {
+  await col('clients').updateOne({ _id: Number(id) }, { $set: fields });
+  return clientById(id);
+}
+async function listClients() {
+  const [clients, counts] = await Promise.all([
+    col('clients').find().sort({ name: 1 }).toArray(),
+    col('tickets').aggregate([{ $group: { _id: '$client_id', n: { $sum: 1 } } }]).toArray()
+  ]);
+  const byClient = Object.fromEntries(counts.map((c) => [c._id, c.n]));
+  return clients.map((c) => ({ ...row(c), tickets: byClient[c._id] || 0 }));
 }
 
 function publicClient(c) {
@@ -174,110 +134,112 @@ function publicClient(c) {
                 autofix: !!c.autofix, createdAt: c.created_at };
 }
 
-function ticketRow(id) {
-  return db.prepare('SELECT * FROM tickets WHERE id = ?').get(id) || null;
-}
+// --- tickets ---
+const ticketRow = async (id) => row(await col('tickets').findOne({ _id: String(id) }));
 
 // Full ticket for agents.
-function ticketForAgent(row) {
-  if (!row) return null;
-  const client = clientById(row.client_id);
-  const assignee = row.assignee_id ? db.prepare('SELECT id, name FROM agents WHERE id = ?').get(row.assignee_id) : null;
+async function ticketForAgent(r) {
+  if (!r) return null;
+  const [client, assignee] = await Promise.all([
+    clientById(r.client_id),
+    r.assignee_id ? agentById(r.assignee_id) : null
+  ]);
   return {
-    id: row.id,
+    id: r.id,
     client: client ? { id: client.id, name: client.name, slug: client.slug } : null,
-    channel: row.channel,
-    requester: { name: row.requester_name, email: row.requester_email },
-    subject: row.subject,
-    description: row.description,
-    category: row.category,
-    priority: row.priority,
-    status: row.status,
-    pageUrl: row.page_url,
-    steps: row.steps,
-    expected: row.expected,
-    actual: row.actual,
-    environment: row.environment,
-    externalRef: row.external_ref,
+    channel: r.channel,
+    requester: { name: r.requester_name, email: r.requester_email },
+    subject: r.subject,
+    description: r.description,
+    category: r.category,
+    priority: r.priority,
+    status: r.status,
+    pageUrl: r.page_url,
+    steps: r.steps,
+    expected: r.expected,
+    actual: r.actual,
+    environment: r.environment,
+    externalRef: r.external_ref,
     assignee: assignee ? { id: assignee.id, name: assignee.name } : null,
     autofix: {
-      id: row.autofix_id,
-      stage: row.autofix_stage,
-      syncedAt: row.autofix_synced_at,
-      ...(row.autofix_json ? JSON.parse(row.autofix_json) : {})
+      id: r.autofix_id,
+      stage: r.autofix_stage,
+      syncedAt: r.autofix_synced_at,
+      ...(r.autofix_json ? JSON.parse(r.autofix_json) : {})
     },
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    firstReplyAt: row.first_reply_at,
-    solvedAt: row.solved_at
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    firstReplyAt: r.first_reply_at,
+    solvedAt: r.solved_at
   };
 }
 
-function messages(ticketId, { publicOnly = false } = {}) {
-  const rows = db.prepare('SELECT * FROM messages WHERE ticket_id = ? ORDER BY id').all(ticketId);
-  return rows
-    .filter((m) => !publicOnly || PUBLIC_KINDS.includes(m.kind))
-    .map((m) => ({ id: m.id, kind: m.kind, author: m.author, body: m.body, createdAt: m.created_at }));
+async function messages(ticketId, { publicOnly = false } = {}) {
+  const filter = { ticket_id: ticketId, ...(publicOnly ? { kind: { $in: PUBLIC_KINDS } } : {}) };
+  return (await col('messages').find(filter).sort({ _id: 1 }).toArray())
+    .map((m) => ({ id: m._id, kind: m.kind, author: m.author, body: m.body, createdAt: m.created_at }));
 }
 
-function attachments(ticketId) {
-  return db.prepare('SELECT id, filename, mime, size, created_at AS createdAt FROM attachments WHERE ticket_id = ? ORDER BY id')
-    .all(ticketId);
+async function attachments(ticketId) {
+  return (await col('attachments').find({ ticket_id: ticketId }, { projection: { data: 0 } }).sort({ _id: 1 }).toArray())
+    .map((a) => ({ id: a._id, filename: a.filename, mime: a.mime, size: a.size, createdAt: a.created_at }));
 }
 
-function addMessage(ticketId, kind, author, body) {
-  const ts = now();
-  db.prepare('INSERT INTO messages (ticket_id, kind, author, body, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(ticketId, kind, author, body, ts);
-  db.prepare('UPDATE tickets SET updated_at = ? WHERE id = ?').run(ts, ticketId);
+async function attachment(id, ticketId) {
+  const a = await col('attachments').findOne({ _id: Number(id), ...(ticketId ? { ticket_id: ticketId } : {}) });
+  return a && { ...row(a), data: Buffer.from(a.data.buffer) };
+}
+
+async function addMessage(ticketId, kind, author, body, createdAt = now()) {
+  await col('messages').insertOne({ _id: await nextId('messages'), ticket_id: ticketId, kind, author, body, created_at: createdAt });
+  await col('tickets').updateOne({ _id: ticketId }, { $set: { updated_at: now() } });
 }
 
 const TICKET_COLUMNS = new Set([
   'status', 'priority', 'category', 'assignee_id', 'autofix_id', 'autofix_stage', 'autofix_json',
-  'autofix_synced_at', 'first_reply_at', 'solved_at'
+  'autofix_synced_at', 'first_reply_at', 'solved_at', 'updated_at'
 ]);
 
-function updateTicket(id, fields) {
-  const keys = Object.keys(fields);
-  const unknown = keys.filter((k) => !TICKET_COLUMNS.has(k));
+async function updateTicket(id, fields) {
+  const unknown = Object.keys(fields).filter((k) => !TICKET_COLUMNS.has(k));
   if (unknown.length) throw new Error(`unknown ticket fields: ${unknown.join(', ')}`);
   if (fields.status && ['solved', 'closed'].includes(fields.status) && fields.solved_at === undefined) {
-    const row = ticketRow(id);
-    if (row && !row.solved_at) fields.solved_at = now();
+    const r = await ticketRow(id);
+    if (r && !r.solved_at) fields.solved_at = now();
   }
   if (fields.status && !['solved', 'closed'].includes(fields.status)) fields.solved_at = null;
-  fields.updated_at = now();
-  db.prepare(`UPDATE tickets SET ${Object.keys(fields).map((k) => `${k} = ?`).join(', ')} WHERE id = ?`)
-    .run(...Object.values(fields), id);
+  if (!fields.updated_at) fields.updated_at = now();
+  await col('tickets').updateOne({ _id: id }, { $set: fields });
 }
 
-function createTicket(t) {
+async function createTicket(t) {
   const ts = t.createdAt || now();
-  return tx(() => {
-    const { lastInsertRowid } = db.prepare(`
-      INSERT INTO tickets (client_id, channel, access_token, requester_name, requester_email, subject,
-        description, category, priority, page_url, steps, expected, actual, environment, external_ref,
-        created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      t.clientId, t.channel, crypto.randomBytes(18).toString('base64url'), t.name || null, t.email,
-      t.subject, t.description, t.category, t.priority, t.pageUrl || null, t.steps || null,
-      t.expected || null, t.actual || null, t.environment || null, t.externalRef || null, ts, ts
-    );
-    const id = `${config.TICKET_PREFIX}-${1000 + Number(lastInsertRowid)}`;
-    db.prepare('UPDATE tickets SET id = ? WHERE n = ?').run(id, lastInsertRowid);
-    for (const a of t.attachments || []) {
-      db.prepare('INSERT INTO attachments (ticket_id, filename, mime, size, data, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(id, a.filename, a.mime, a.data.length, a.data, ts);
-    }
-    db.prepare('INSERT INTO messages (ticket_id, kind, author, body, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(id, 'system', 'Lantern Desk', `Ticket received via ${t.channel === 'web' ? 'the hosted request form' : 'the client API'}.`, ts);
-    return ticketRow(id);
+  const n = await nextId('tickets');
+  const id = `${config.TICKET_PREFIX}-${1000 + n}`;
+  await col('tickets').insertOne({
+    _id: id, n, client_id: t.clientId, channel: t.channel, access_token: crypto.randomBytes(18).toString('base64url'),
+    requester_name: t.name || null, requester_email: t.email, subject: t.subject, description: t.description,
+    category: t.category, priority: t.priority, status: 'new', page_url: t.pageUrl || null, steps: t.steps || null,
+    expected: t.expected || null, actual: t.actual || null, environment: t.environment || null,
+    external_ref: t.externalRef || null, assignee_id: null, autofix_id: null, autofix_stage: null, autofix_json: null,
+    autofix_synced_at: null, created_at: ts, updated_at: ts, first_reply_at: null, solved_at: null
   });
+  for (const a of t.attachments || []) {
+    await col('attachments').insertOne({
+      _id: await nextId('attachments'), ticket_id: id, filename: a.filename, mime: a.mime, size: a.data.length,
+      data: new Binary(a.data), created_at: ts
+    });
+  }
+  await addMessage(id, 'system', 'Lantern Desk',
+    `Ticket received via ${t.channel === 'web' ? 'the hosted request form' : 'the client API'}.`, ts);
+  await col('tickets').updateOne({ _id: id }, { $set: { updated_at: ts } });
+  return ticketRow(id);
 }
 
 module.exports = {
   STATUSES, PRIORITIES, CATEGORIES, PUBLIC_KINDS,
-  open, get, tx, now, hashPassword, checkPassword, newApiKey, sha256,
-  createClient, clientById, clientByKey, publicClient,
-  ticketRow, ticketForAgent, messages, attachments, addMessage, updateTicket, createTicket
+  open, close, col, row, nextId, now, hashPassword, checkPassword, newApiKey, sha256,
+  agentById, agentByEmail, listAgents,
+  createClient, clientById, clientBySlug, clientByKey, updateClient, listClients, publicClient,
+  ticketRow, ticketForAgent, messages, attachments, attachment, addMessage, updateTicket, createTicket
 };

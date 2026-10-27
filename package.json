@@ -10,11 +10,11 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/server.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
-    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\"",
-    "seed:demo": "node --disable-warning=ExperimentalWarning scripts/seed-demo.js"
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\""
   },
   "dependencies": {
     "dotenv": "^17.2.3",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "mongodb": "^6.21.0"
   }
 }
